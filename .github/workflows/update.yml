@@ -1,0 +1,33 @@
+name: Update DB
+
+on:
+  workflow_dispatch: {}
+  schedule:
+    # At 9am, Noon, 5pm ET
+    - cron: '15 13,16,21 * * *'
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+
+      - name: "Set up Python"
+        uses: actions/setup-python@v5
+        with:
+          python-version-file: ".python-version"
+
+      - name: Install the project
+        run: uv sync --all-extras --dev
+
+      - name: Run update
+        env:
+          REGULATIONS_GOV_API_KEY: ${{ secrets.REGULATIONS_GOV_API_KEY }}
+          NOTION_API_KEY: ${{ secrets.NOTION_API_KEY }}
+          NOTION_RULE_DATABASE: ${{ secrets.NOTION_RULE_DATABASE }}
+        run: |
+          uv run rule_scout.py
+
