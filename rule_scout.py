@@ -185,7 +185,7 @@ class RegulationsGovApi(httpx.Client):
 
 
 def main() -> None:
-    timeframe = timedelta(days=14)
+    timeframe = timedelta(days=2)
     from_date = date.today() - timeframe
 
     with NotionApi(getenv('NOTION_API_KEY')) as notion:
@@ -198,10 +198,6 @@ def main() -> None:
                 }
             }
         )
-        for row in rule_rows:
-            title = notion.cell_as_text(row['properties']['Title'])
-            document_number = notion.cell_as_text(row['properties']['FR Document Number'])
-            print(f'{document_number}: {title}')
 
         already_in_notion = set(notion.cell_as_text(row['properties']['FR Document Number'])
                                 for row in rule_rows)
@@ -388,6 +384,8 @@ def main() -> None:
                             'url': data.fr_html
                         }
                     })
+
+    print('Done!')
 
 
 def notion_rich_text(text: str | None):
