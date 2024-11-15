@@ -388,10 +388,20 @@ def main() -> None:
     print('Done!')
 
 
-def notion_rich_text(text: str | None):
+def notion_rich_text(text: str | None) -> dict:
+    segments = []
+    if text:
+        segment_length = 2000
+        max_segments = 100
+        segments = []
+        remainder = text
+        while remainder and len(segments) < max_segments:
+            segments.append(notion_text(remainder[:segment_length]))
+            remainder = remainder[segment_length:]
+
     return {
         'type': 'rich_text',
-        'rich_text': None if text is None else [notion_text(text)]
+        'rich_text': segments
     }
 
 
