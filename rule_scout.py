@@ -119,13 +119,15 @@ class FederalRegisterApi(httpx.Client):
     def get_document(self, document_id) -> dict:
         return self.get(url=f'/documents/{document_id}').raise_for_status().json()
 
-    def get_recent_proposed_rules(self, from_date: date | None = None) -> Generator[dict]:
+    def get_recent_proposed_rules(self, from_date: date | None = None, to_date: date | None = None) -> Generator[dict]:
         params = {
             'order': 'oldest',
             'conditions[type][]': 'PRORULE',
         }
         if from_date:
             params['conditions[publication_date][gte]'] = from_date.isoformat()
+        if to_date:
+            params['conditions[publication_date][lte]'] = to_date.isoformat()
         next_options = {
             'url': '/documents',
             'params': params
@@ -241,7 +243,7 @@ def main() -> None:
                     fr_html=rule_info['html_url'],
                     fr_pdf=rule_info['pdf_url'],
                     fr_publication_date=date.fromisoformat(rule_info['publication_date']),
-                    fr_topics=rule_info['topics'],
+                    fr_topics=sorted(set(rule_info['topics'])),
                     rins=rule_info['regulation_id_numbers'],
                     # This info is not always present and is less detailed than
                     # the equivalent from regulations.gov, so we'll also look
@@ -317,6 +319,14 @@ def main() -> None:
                 if len(authority_string) >= 2000:
                     authority_string = authority_string[:1999] + '…'
 
+                # Dedupe when multiple dockets use the same keywords.
+                keywords = sorted(set(
+                    keyword
+                    for document in data.docket_documents
+                    if document.docket
+                    for keyword in document.docket.keywords
+                ))
+
                 with NotionApi(getenv('NOTION_API_KEY')) as notion:
                     notion.insert_into_db(NOTION_RULE_DATABASE, {
                         'Corrections': notion_rich_text(', '.join(data.corrections)),
@@ -324,7 +334,7 @@ def main() -> None:
                         'FR Topics': {
                             'type': 'multi_select',
                             'multi_select': [
-                                {'name': topic}
+                                {'name': re.sub(r', ', ' and ', topic)}
                                 for topic in data.fr_topics
                             ]
                         },
@@ -343,9 +353,7 @@ def main() -> None:
                             'type': 'multi_select',
                             'multi_select': [
                                 {'name': keyword}
-                                for document in data.docket_documents
-                                if document.docket
-                                for keyword in document.docket.keywords
+                                for keyword in keywords
                             ]
                         },
                         'FR Publication Date': {
