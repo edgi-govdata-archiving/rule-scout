@@ -229,6 +229,10 @@ def main() -> None:
                     agencies=[
                         FrAgency(id=agency['id'], name=agency['name'])
                         for agency in rule_info['agencies']
+                        # Some listings seem malformed! So far we've only seen:
+                        #   {'raw_name': 'Office of Inspector General'}
+                        # Which might be a special case?
+                        if 'id' in agency
                     ],
                     authority=authority,
                     corrections=[],
@@ -249,7 +253,6 @@ def main() -> None:
                     )
                 )
 
-                # FIXME: there may be more than one docket!
                 for summary in regulations_gov.find_documents_by_register_id(register_id):
                     regs_gov_id = summary['id']
                     document_info = regulations_gov.get_document(regs_gov_id)
