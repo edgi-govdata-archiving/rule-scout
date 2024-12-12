@@ -381,7 +381,7 @@ def main() -> None:
                         'Agencies': {
                             'type': 'multi_select',
                             'multi_select': [
-                                {'name': agency.name}
+                                {'name': re.sub(r'\s*,\s*', ' - ', agency.name)}
                                 for agency in data.agencies
                             ]
                         },
