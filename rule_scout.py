@@ -134,7 +134,7 @@ class FederalRegisterApi(httpx.Client):
         }
         while next_options:
             page = self.get(**next_options).raise_for_status().json()
-            yield from page['results']
+            yield from page.get('results') or []
 
             next_url = page.get('next_page_url')
             next_options = {'url': next_url} if next_url else None
