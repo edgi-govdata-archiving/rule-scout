@@ -3,8 +3,8 @@ name: Update DB
 on:
   workflow_dispatch: {}
   schedule:
-    # At 9am, Noon, 5pm ET
-    - cron: '15 13,16,21 * * *'
+    # At 9:30am, 12:30pm, 5:30pm ET
+    - cron: '30 13,16,21 * * *'
 
 jobs:
   update:
