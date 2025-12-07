@@ -70,7 +70,8 @@ class NotionApi(httpx.Client):
                 'Authorization': f'Bearer {api_key}',
                 'Notion-Version': '2022-06-28',
                 'Content-Type': 'application/json',
-            }
+            },
+            timeout=15.0,
         )
 
     def query_db(self, block_id: str, filter: dict | None = None) -> dict:
@@ -114,7 +115,7 @@ class FederalRegisterApi(httpx.Client):
     BASE_URL = 'https://www.federalregister.gov/api/v1'
 
     def __init__(self):
-        super().__init__(base_url=self.BASE_URL)
+        super().__init__(base_url=self.BASE_URL, timeout=10.0)
 
     def get_document(self, document_id) -> dict:
         return self.get(url=f'/documents/{document_id}').raise_for_status().json()
@@ -166,7 +167,8 @@ class RegulationsGovApi(httpx.Client):
 
         super().__init__(
             base_url=self.BASE_URL,
-            headers={'X-Api-Key': api_key}
+            headers={'X-Api-Key': api_key},
+            timeout=10.0,
         )
 
     def get_docket(self, docket_id) -> dict:
