@@ -1,16 +1,16 @@
-from collections.abc import Generator
+from collections.abc import Generator, Iterable
 from dataclasses import dataclass, field, asdict
 from datetime import date, datetime, timedelta
 import json
 from os import getenv
 import re
-from typing import Any, Generator, Iterable
+from typing import Any
 from xml.etree import ElementTree
 import httpx
 from httpx_retries import Retry, RetryTransport
 
 
-NOTION_RULE_DATABASE = getenv('NOTION_RULE_DATABASE')
+NOTION_RULE_DATABASE = getenv('NOTION_RULE_DATABASE', '')
 
 
 @dataclass
