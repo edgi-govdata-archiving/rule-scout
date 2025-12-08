@@ -78,20 +78,20 @@ class NotionApi(HttpClient):
             base_url=self.BASE_URL,
             headers={
                 'Authorization': f'Bearer {api_key}',
-                'Notion-Version': '2022-06-28',
+                'Notion-Version': '2025-09-03',
                 'Content-Type': 'application/json',
             },
             timeout=15.0,
         )
 
-    def query_db(self, block_id: str, filter: dict | None = None) -> Generator[dict, None, None]:
+    def query_db(self, data_source_id: str, filter: dict | None = None) -> Generator[dict, None, None]:
         body = {}
         if filter:
             body['filter'] = filter
 
         while True:
             data = self.post(
-                url=f'/databases/{block_id}/query',
+                url=f'/data_sources/{data_source_id}/query',
                 json=body
             ).json()
 
@@ -102,13 +102,16 @@ class NotionApi(HttpClient):
             else:
                 break
 
-    def insert_into_db(self, block_id: str, page_data: dict) -> Any:
+    def insert_into_db(self, data_source_id: str, page_data: dict) -> Any:
         response = self.post(
             url='/pages',
             json={
-                'parent': {'type': 'database_id', 'database_id': block_id},
-                'properties': page_data
-            }
+                'parent': {
+                    'type': 'data_source_id',
+                    'data_source_id': data_source_id,
+                },
+                'properties': page_data,
+            },
         )
 
         body = response.json()
