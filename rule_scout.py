@@ -4,7 +4,7 @@ from datetime import date, datetime, timedelta
 import json
 from os import getenv
 import re
-from typing import Any, Iterable
+from typing import Any, Generator, Iterable
 from xml.etree import ElementTree
 import httpx
 
@@ -74,17 +74,23 @@ class NotionApi(httpx.Client):
             timeout=15.0,
         )
 
-    def query_db(self, block_id: str, filter: dict | None = None) -> dict:
+    def query_db(self, block_id: str, filter: dict | None = None) -> Generator[dict, None, None]:
         body = {}
         if filter:
             body['filter'] = filter
 
-        data = self.post(
-            url=f'/databases/{block_id}/query',
-            json=body
-        ).json()
+        while True:
+            data = self.post(
+                url=f'/databases/{block_id}/query',
+                json=body
+            ).json()
 
-        return data['results']
+            yield from data['results']
+
+            if data.get('has_more', False):
+                body = {**body, 'start_cursor': data.get('next_cursor')}
+            else:
+                break
 
     def insert_into_db(self, block_id: str, page_data: dict) -> Any:
         response = self.post(
@@ -98,6 +104,18 @@ class NotionApi(httpx.Client):
         body = response.json()
         if not response.is_success:
             raise ValueError(f'Error inserting into Notion DB: {json.dumps(body, indent=2)}')
+
+        return body
+
+    def trash_page(self, page_id: str) -> Any:
+        response = self.patch(
+            url=f'/pages/{page_id}',
+            json={'in_trash': True}
+        )
+
+        body = response.json()
+        if not response.is_success:
+            raise ValueError(f'Error trashing page {page_id}: {json.dumps(body, indent=2)}')
 
         return body
 
