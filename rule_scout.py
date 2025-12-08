@@ -1,15 +1,16 @@
-from collections.abc import Generator
+from collections.abc import Generator, Iterable
 from dataclasses import dataclass, field, asdict
 from datetime import date, datetime, timedelta
 import json
 from os import getenv
 import re
-from typing import Any, Generator, Iterable
+from typing import Any
 from xml.etree import ElementTree
 import httpx
+from httpx_retries import Retry, RetryTransport
 
 
-NOTION_RULE_DATABASE = getenv('NOTION_RULE_DATABASE')
+NOTION_RULE_DATABASE = getenv('NOTION_RULE_DATABASE', '')
 
 
 @dataclass
@@ -57,7 +58,16 @@ class ProposedRule:
     docket_documents: list[DocketDocument] = field(default_factory=list)
 
 
-class NotionApi(httpx.Client):
+class HttpClient(httpx.Client):
+    def __init__(self, timeout: float = 10.0, transport: Any = None, **kwargs):
+        super().__init__(
+            timeout=timeout,
+            transport=(transport or RetryTransport(retry=Retry(total=5, backoff_factor=1.0))),
+            **kwargs,
+        )
+
+
+class NotionApi(HttpClient):
     BASE_URL = 'https://api.notion.com/v1'
 
     def __init__(self, api_key):
@@ -129,11 +139,11 @@ class NotionApi(httpx.Client):
             return None
 
 
-class FederalRegisterApi(httpx.Client):
+class FederalRegisterApi(HttpClient):
     BASE_URL = 'https://www.federalregister.gov/api/v1'
 
     def __init__(self):
-        super().__init__(base_url=self.BASE_URL, timeout=10.0)
+        super().__init__(base_url=self.BASE_URL)
 
     def get_document(self, document_id) -> dict:
         return self.get(url=f'/documents/{document_id}').raise_for_status().json()
@@ -176,7 +186,7 @@ class FederalRegisterApi(httpx.Client):
                 for item in text.split(';')]
 
 
-class RegulationsGovApi(httpx.Client):
+class RegulationsGovApi(HttpClient):
     BASE_URL = 'https://api.regulations.gov/v4'
 
     def __init__(self, api_key):
@@ -186,7 +196,6 @@ class RegulationsGovApi(httpx.Client):
         super().__init__(
             base_url=self.BASE_URL,
             headers={'X-Api-Key': api_key},
-            timeout=10.0,
         )
 
     def get_docket(self, docket_id) -> dict:
