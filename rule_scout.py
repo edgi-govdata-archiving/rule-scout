@@ -1,7 +1,8 @@
 from collections.abc import Generator, Iterable
 from dataclasses import dataclass, field, asdict
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 import json
+import json as jsonmodule
 from os import getenv
 import re
 from typing import Any
@@ -84,16 +85,43 @@ class NotionApi(HttpClient):
             timeout=15.0,
         )
 
-    def query_db(self, data_source_id: str, filter: dict | None = None) -> Generator[dict, None, None]:
+    def json(
+        self,
+        method: str,
+        url: str,
+        *,
+        json: Any = None,
+        params: Any = None,
+        headers: dict | None = None,
+    ) -> dict | list:
+        response = self.request(method, url, json=json, params=params, headers=headers)
+        body = response.json()
+        if not response.is_success:
+            raise ValueError(f'Error for Notion {method} {url}: {jsonmodule.dumps(body, indent=2)}')
+
+        return body
+
+    def query_db(self, data_source_id: str, filter: dict | None = None, select: list[str] = [], sort: dict[str, str] = {}) -> Generator[dict, None, None]:
         body = {}
         if filter:
             body['filter'] = filter
+        if sort:
+            body['sorts'] = [
+                dict(property=key, direction=value)
+                for key, value in sort.items()
+            ]
+        params = {}
+        if select:
+            params['filter_properties[]'] = select
 
         while True:
-            data = self.post(
+            data = self.json(
+                'POST',
                 url=f'/data_sources/{data_source_id}/query',
-                json=body
-            ).json()
+                params=params,
+                json=body,
+            )
+            assert isinstance(data, dict)
 
             yield from data['results']
 
@@ -120,6 +148,40 @@ class NotionApi(HttpClient):
 
         return body
 
+    def get_page(self, page_id: str) -> Any:
+        return self.json('GET', f'/pages/{page_id}')
+
+    def get_page_content(self, page_id: str) -> Any:
+        content = []
+        next_options = {
+            'url': f'/blocks/{page_id}/children',
+            'params': {}
+        }
+        while next_options:
+            data = self.get(**next_options).raise_for_status().json()
+            content.extend(data['results'])
+            if data['next_cursor']:
+                next_options = {
+                    **next_options,
+                    'params': {'start_cursor': data['next_cursor']}
+                }
+            else:
+                next_options = None
+
+        return content
+
+    def update_page(self, page_id: str, properties: dict) -> Any:
+        response = self.patch(
+            url=f'/pages/{page_id}',
+            json={'properties': properties}
+        )
+
+        body = response.json()
+        if not response.is_success:
+            raise ValueError(f'Error updating page {page_id}: {json.dumps(body, indent=2)}')
+
+        return body
+
     def trash_page(self, page_id: str) -> Any:
         response = self.patch(
             url=f'/pages/{page_id}',
@@ -132,12 +194,34 @@ class NotionApi(HttpClient):
 
         return body
 
+    def append_page_content(self, page_id: str, children: list[dict], after: str|None) -> Any:
+        return self.json(
+            'PATCH',
+            url=f'/blocks/{page_id}/children',
+            json={'children': children, 'after': after}
+        )
+
     @staticmethod
-    def cell_as_text(cell: dict) -> str | None:
-        cell_type = cell['type']
+    def cell_as_text(cell: dict, type_field: str | None = None) -> str | None:
+        cell_type = type_field or cell['type']
         raw_value = cell[cell_type]
         if raw_value:
             return ''.join(part['plain_text'] for part in raw_value)
+        else:
+            return None
+
+    @staticmethod
+    def cell_as_datetime(cell: dict) -> datetime | None:
+        if cell['type'] != 'date':
+            raise TypeError(f'Cell is not a date (type={cell['type']})')
+
+        notion_value = cell['date']
+        if notion_value:
+            result = datetime.fromisoformat(notion_value['start'])
+            if not result.tzinfo:
+                result = result.astimezone(timezone.utc)
+
+            return result
         else:
             return None
 
@@ -301,6 +385,13 @@ def main() -> None:
                     )
                     data.docket_documents.append(document)
 
+                    # Not all documents belong to [visible] dockets! Usually
+                    # this is because an agency (e.g. FCC) does not use
+                    # regulations.gov (often because they have their own
+                    # public comment system). It seems the proposed rules get
+                    # posted somehow to regulations.gov, but are added to a
+                    # special docket that is not visible to public users, and
+                    # that was probably automatically created.
                     docket_id = document_info['attributes']['docketId']
                     if docket_id:
                         docket_info = regulations_gov.get_docket(docket_id)
