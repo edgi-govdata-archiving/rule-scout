@@ -425,7 +425,15 @@ def main() -> None:
                         },
                         'FR Link': {
                             'url': data.fr_html
-                        }
+                        },
+                        # Combined list of FR topics and Docket keywords.
+                        'Tags': {
+                            'type': 'multi_select',
+                            'multi_select': [
+                                {'name': re.sub(r', ', ' and ', topic)}
+                                for topic in (*data.fr_topics, *keywords,)
+                            ]
+                        },
                     })
 
     print('Done!')
@@ -467,7 +475,6 @@ def notion_rich_text_url_list(items: Iterable[tuple[str, str]]) -> list[dict]:
         result.append(notion_text(item[0], item[1]))
 
     return result
-
 
 
 if __name__ == "__main__":
