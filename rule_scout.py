@@ -361,7 +361,10 @@ def main() -> None:
 
                 with NotionApi(getenv('NOTION_API_KEY')) as notion:
                     notion.insert_into_db(NOTION_RULE_DATABASE, {
-                        'Corrections': notion_rich_text(', '.join(data.corrections)),
+                        # These are now relations and need to be formatted
+                        # differently:
+                        #   {'type': 'relation', 'relation': [{'id': '<page_id>'}]}
+                        # 'Corrections': notion_rich_text(', '.join(data.corrections)),
                         'FR Citation': notion_rich_text(data.fr_citation),
                         'FR Topics': {
                             'type': 'multi_select',
