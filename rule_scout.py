@@ -5,7 +5,7 @@ import json
 import json as jsonmodule
 from os import getenv
 import re
-from typing import Any
+from typing import Any, Literal
 from xml.etree import ElementTree
 import httpx
 from httpx_retries import Retry, RetryTransport
@@ -28,6 +28,7 @@ class FrAgency:
 class Docket:
     id: str
     url: str
+    type: Literal['rulemaking', 'nonrulemaking']
     keywords: list[str] = field(default_factory=list)
     rin: str | None = None
 
@@ -396,14 +397,14 @@ def main() -> None:
                     if docket_id:
                         docket_info = regulations_gov.get_docket(docket_id)
                         rin = docket_info['attributes']['rin']
+                        if rin and rin.lower() == 'not assigned':
+                            rin = None
                         document.docket = Docket(
                             id=docket_id,
                             url=f'https://www.regulations.gov/docket/{docket_info["id"]}',
+                            type=docket_info['docketType'].lower(),
                             keywords=[
-                                # Sometimes the keywords end in commas. Other
-                                # times they are chemical names with commas,
-                                # which we replace with `'` primes.
-                                re.sub(r',', "'", term.strip(', '))
+                                re.sub(r',', ";", term.strip(', '))
                                 for term in docket_info['attributes']['keywords'] or []
                             ],
                             rin=rin

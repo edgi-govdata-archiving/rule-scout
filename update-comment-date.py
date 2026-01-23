@@ -1,7 +1,17 @@
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from os import getenv
-from rule_scout import NotionApi, NOTION_RULE_DATABASE, RegulationsGovApi, notion_rich_text_url_list
+import re
+from rule_scout import (
+    NotionApi,
+    NOTION_RULE_DATABASE,
+    RegulationsGovApi,
+    notion_rich_text,
+    notion_rich_text_url_list,
+)
+
+
+ALWAYS_UPDATE_DOCKET_DATA = True
 
 
 def parse_rich_text_list(notion_object: dict) -> list[str]:
@@ -10,6 +20,13 @@ def parse_rich_text_list(notion_object: dict) -> list[str]:
         return [item.strip() for item in text.split(',')]
     else:
         return []
+
+
+def parse_multiselect_set(notion_object: dict) -> set[str]:
+    if 'multi_select' not in notion_object:
+        raise TypeError(f'Object is not a multi_select, it is "{notion_object.get('type')}"')
+
+    return set([item['name'] for item in notion_object['multi_select']])
 
 
 with NotionApi(getenv('NOTION_API_KEY')) as notion:
@@ -111,6 +128,60 @@ with NotionApi(getenv('NOTION_API_KEY')) as notion:
                         for d in sorted(found_dockets)
                     )
                 }
+
+            if ALWAYS_UPDATE_DOCKET_DATA or 'Dockets' in updates:
+                # TODO: Use docket.attributes.docketType
+                # This does not have a field in Notion (yet!).
+                new_keywords = set()
+                new_rins = set()
+                for docket_id in found_dockets:
+                    docket_info = regulations_gov.get_docket(docket_id)
+                    for term in docket_info['attributes']['keywords'] or []:
+                        new_keywords.add(re.sub(r',', ";", term.strip(', ')))
+
+                    rin = docket_info['attributes']['rin']
+                    if rin and rin.lower() != 'not assigned':
+                        new_rins.add(rin)
+
+                old_keywords = parse_multiselect_set(page['properties']['Docket Keywords'])
+                if old_keywords != new_keywords:
+                    print(f'  KW (old): {', '.join(sorted(old_keywords))}')
+                    print(f'     (new): {', '.join(sorted(new_keywords))}')
+                    updates['Docket Keywords'] = {
+                        'type': 'multi_select',
+                        'multi_select': [
+                            {'name': keyword}
+                            for keyword in sorted(new_keywords)
+                        ]
+                    }
+
+                    fr_topics = parse_multiselect_set(page['properties']['FR Topics'])
+                    updates['Tags'] = {
+                        'type': 'multi_select',
+                        'multi_select': [
+                            {'name': tag}
+                            for tag in sorted([*fr_topics, *new_keywords])
+                        ]
+                    }
+
+                # RINs are a little complicated; they belong to Dockets, but
+                # sometimes a document on regulations.gov does not have a user-
+                # visible docket. The correct RINs are often listed on the
+                # Federal Register, which we don't re-query here, so we only
+                # add to the list of known RINs and never remove.
+                old_rins = set(parse_rich_text_list(page['properties']['RINs']))
+                # TODO: remove this old "Not Assigned" check after remediating
+                # old data. These always should have been skipped and this is
+                # here to help clear them out.
+                if new_rins.difference(old_rins) or 'Not Assigned' in old_rins:
+                    new_rins.update([
+                        rin
+                        for rin in old_rins
+                        if rin.lower() != 'not assigned'
+                    ])
+                    print(f'  RIN (old): {', '.join(sorted(old_rins))}')
+                    print(f'      (new): {', '.join(sorted(new_rins))}')
+                    updates['RINs'] = notion_rich_text(', '.join(sorted(new_rins)))
 
             if old_comment_deadline != latest_comment_date:
                 print(f'  New comment deadline: {latest_comment_date}')
