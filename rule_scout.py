@@ -1,11 +1,13 @@
 from collections.abc import Generator, Iterable
 from dataclasses import dataclass, field, asdict
 from datetime import date, datetime, timedelta, timezone
+import itertools
 import json
 import json as jsonmodule
 from os import getenv
 import re
 from typing import Any, Literal
+from urllib.parse import urlsplit
 from xml.etree import ElementTree
 import httpx
 from httpx_retries import Retry, RetryTransport
@@ -32,18 +34,22 @@ class Docket:
     type: Literal['rulemaking', 'nonrulemaking']
     keywords: list[str] = field(default_factory=list)
     rin: str | None = None
+    # Agency-specific, but we want them for analysis and classification.
+    subtypes: list[str] = field(default_factory=list)
+    category: str | None = None
 
     @staticmethod
     def from_api(data: dict) -> 'Docket':
         """Parse a Docket object from a regulations.gov API response."""
         docket_id = data['id']
-        rin = data['attributes']['rin']
+        attributes = data['attributes']
+        rin = attributes['rin']
         if rin and rin.lower() == 'not assigned':
             rin = None
 
         keywords = [
             term.strip(', ')
-            for term in data['attributes']['keywords'] or []
+            for term in attributes['keywords'] or []
         ]
         # Handle a common case of several terms listed as a single
         # comma-separated string instead of as multiple terms in the list.
@@ -57,14 +63,20 @@ class Docket:
 
         return Docket(
             id=docket_id,
-            title=data['attributes']['title'],
+            title=attributes['title'],
             url=f'https://www.regulations.gov/docket/{docket_id}',
-            type=data['attributes']['docketType'].lower(),
+            type=attributes['docketType'].lower(),
             # TODO: the comma substitution here is because Notion can't handle
             # commas in select box items. This should probably happen when
             # formatting Notion input and not here.
             keywords=[re.sub(r',', ";", term) for term in keywords],
-            rin=rin
+            rin=rin,
+            subtypes=[
+                x
+                for x in [attributes['subType'], attributes['subType2']]
+                if x
+            ],
+            category=attributes.get('category')
         )
 
 
@@ -75,14 +87,18 @@ class DocketDocument:
     comment_start_date: datetime | None = None
     comment_end_date: datetime | None = None
     docket: Docket | None = None
+    # This is agency-specific, but we want it for analysis and classification.
+    subtype: str = ''
 
 
 @dataclass
 class ProposedRule:
     title: str
-    abstract: str
+    abstract: str | None
+    action: str
     agencies: list[FrAgency]
     authority: list[str]
+    correction_of: str | None
     corrections: list
     fr_citation: str
     fr_document_number: str
@@ -356,6 +372,7 @@ def main() -> None:
         already_in_notion = set(notion.cell_as_text(row['properties']['FR Document Number'])
                                 for row in rule_rows)
 
+    docket_cache: dict[str, Docket] = {}
     with FederalRegisterApi() as register:
         with RegulationsGovApi(getenv(key='REGULATIONS_GOV_API_KEY')) as regulations_gov:
             for rule in register.get_recent_proposed_rules(from_date=from_date):
@@ -364,11 +381,21 @@ def main() -> None:
                     continue
 
                 rule_info = register.get_document(register_id)
+                correction_of = None
                 # TODO: check if correction and update existing record instead
                 # of skipping. This will be a URL, so we have to parse, e.g:
                 # "https://www.federalregister.gov/api/v1/documents/2024-22385"
                 if rule_info['correction_of']:
-                    continue
+                    correction_of_raw = rule_info['correction_of']
+                    correction_url = urlsplit(correction_of_raw)
+                    if correction_url.hostname != 'www.federalregister.gov':
+                        raise ValueError(f'FR document {register_id} had invalid `correction_of` host: "{correction_of_raw}"')
+
+                    path_match = re.match(r'^/api/v1/documents/(\d{4}-\d+)/?$', correction_url.path)
+                    if not path_match:
+                        raise ValueError(f'FR document {register_id} had invalid `correction_of` path: "{correction_of_raw}"')
+
+                    correction_of = path_match.group(1)
 
                 authority = register.get_rule_authority(rule_info)
 
@@ -380,6 +407,7 @@ def main() -> None:
                     # up in Notion (maybe as an equation?) for now, so just rip
                     # out the markup.
                     abstract=re.sub(r'</?\w+[^>]*>', '', rule_info['abstract']),
+                    action=rule_info['action'],
                     agencies=[
                         FrAgency(id=agency['id'], name=agency['name'])
                         for agency in rule_info['agencies']
@@ -389,6 +417,7 @@ def main() -> None:
                         if 'id' in agency
                     ],
                     authority=authority,
+                    correction_of=correction_of,
                     corrections=[],
                     fr_citation=rule_info['citation'],
                     fr_document_number=register_id,
@@ -430,7 +459,12 @@ def main() -> None:
                     # that was probably automatically created.
                     docket_id = document_info['attributes']['docketId']
                     if docket_id:
-                        document.docket = Docket.from_api(regulations_gov.get_docket(docket_id))
+                        docket = docket_cache.get(docket_id)
+                        if not docket:
+                            docket = Docket.from_api(regulations_gov.get_docket(docket_id))
+                            docket_cache[docket_id] = docket
+
+                        document.docket = docket
                         if document.docket.rin and document.docket.rin not in data.rins:
                             data.rins.append(document.docket.rin)
 
@@ -473,6 +507,11 @@ def main() -> None:
                     for keyword in document.docket.keywords
                 ))
 
+                dockets = set(
+                    document.docket
+                    for document in data.docket_documents
+                    if document.docket
+                )
                 with NotionApi(getenv('NOTION_API_KEY')) as notion:
                     notion.insert_into_db(NOTION_RULE_DATABASE, {
                         # These are now relations and need to be formatted
@@ -514,9 +553,8 @@ def main() -> None:
                         'Dockets': {
                             'type': 'rich_text',
                             'rich_text': notion_rich_text_url_list(
-                                (d.docket.id, d.docket.url)
-                                for d in data.docket_documents
-                                if d.docket
+                                (d.id, d.url)
+                                for d in sorted(dockets, key=lambda d: d.id)
                             )
                         },
                         'RINs': notion_rich_text(', '.join(data.rins)),
@@ -551,6 +589,26 @@ def main() -> None:
                                 for topic in (*data.fr_topics, *keywords,)
                             ]
                         },
+                        'Action': notion_rich_text(data.action),
+                        'Correction of ID': notion_rich_text_url_list(
+                            [(
+                                data.correction_of,
+                                f'https://www.federalregister.gov/d/{data.correction_of}',
+                            )]
+                            if data.correction_of
+                            else []
+                        ),
+                        'Docket Doc Subtypes': notion_rich_text(', '.join(
+                            sorted(set(d.subtype for d in data.docket_documents if d.subtype))
+                        )),
+                        'Docket Subtypes': notion_rich_text(', '.join(
+                            sorted(set(itertools.chain(
+                                *(d.subtypes for d in dockets)
+                            )))
+                        )),
+                        'Docket Categories': notion_rich_text(', '.join(
+                            sorted(d.category for d in dockets if d.category)
+                        )),
                     })
 
     print('Done!')
