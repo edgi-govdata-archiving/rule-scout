@@ -9,9 +9,14 @@ from rule_scout import (
     notion_rich_text,
     notion_rich_text_url_list,
 )
+import time
 
 
 ALWAYS_UPDATE_DOCKET_DATA = True
+
+# Basic rate limit is 1,000/hour, or 1 request every 3.6 seconds. Based on:
+# https://api.data.gov/docs/developer-manual/
+REGULATIONS_GOV_REQUEST_INTERVAL = 3.6
 
 
 def parse_rich_text_list(notion_object: dict) -> list[str]:
@@ -85,6 +90,7 @@ with NotionApi(getenv('NOTION_API_KEY')) as notion:
 
             print(f'{fr_number}: {old_comment_deadline} - {old_docket_docs}')
 
+            time.sleep(REGULATIONS_GOV_REQUEST_INTERVAL)
             doc_infos = regulations_gov.find_documents_by_register_id(fr_number)
             found_docs = []
             found_dockets = []
@@ -135,6 +141,7 @@ with NotionApi(getenv('NOTION_API_KEY')) as notion:
                 new_keywords = set()
                 new_rins = set()
                 for docket_id in found_dockets:
+                    time.sleep(REGULATIONS_GOV_REQUEST_INTERVAL)
                     docket = Docket.from_api(regulations_gov.get_docket(docket_id))
                     new_keywords.update(docket.keywords)
                     if docket.rin:
