@@ -185,5 +185,5 @@ with NotionApi(getenv('NOTION_API_KEY')) as notion:
                 }
 
             if updates:
-                print(f'  Updates: {updates}')
-                # notion.update_page(page['id'], updates)
+                # print(f'  Updates: {updates}')
+                notion.update_page(page['id'], updates)
