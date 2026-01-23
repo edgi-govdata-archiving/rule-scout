@@ -1,4 +1,3 @@
-from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from os import getenv
 from rule_scout import (
@@ -12,7 +11,9 @@ from rule_scout import (
 import time
 
 
-ALWAYS_UPDATE_DOCKET_DATA = True
+# If true, checks for changes to metadata associated with Dockets (e.g. RINs,
+# keywords) on every run, instead of only if new dockets were found.
+ALWAYS_UPDATE_DOCKET_DATA = False
 
 # Basic rate limit is 1,000/hour, or 1 request every 3.6 seconds. Based on:
 # https://api.data.gov/docs/developer-manual/
@@ -36,17 +37,7 @@ def parse_multiselect_set(notion_object: dict) -> set[str]:
 
 with NotionApi(getenv('NOTION_API_KEY')) as notion:
     with RegulationsGovApi(getenv(key='REGULATIONS_GOV_API_KEY')) as regulations_gov:
-        pages = defaultdict(list)
-        # rule_rows = notion.query_db(
-        #     NOTION_RULE_DATABASE,
-        #     {
-        #         'property': 'Comment End Date',
-        #         'date': {
-        #             'after': (datetime.now(tz=timezone.utc) - timedelta(days=-40)).isoformat()
-        #         }
-        #     }
-        # )
-        a_month_ago_iso = (datetime.now(tz=timezone.utc) - timedelta(days=31)).isoformat()
+        active_as_of_date = (datetime.now(tz=timezone.utc) - timedelta(days=7)).isoformat()
         rule_rows = notion.query_db(
             NOTION_RULE_DATABASE,
             {
@@ -54,7 +45,7 @@ with NotionApi(getenv('NOTION_API_KEY')) as notion:
                     {
                         'property': 'Comment End Date',
                         'date': {
-                            'on_or_after': a_month_ago_iso
+                            'on_or_after': active_as_of_date
                         }
                     },
                     {
@@ -68,7 +59,7 @@ with NotionApi(getenv('NOTION_API_KEY')) as notion:
                             {
                                 'property': 'FR Publication Date',
                                 'date': {
-                                    'on_or_after': a_month_ago_iso
+                                    'on_or_after': active_as_of_date
                                 }
                             }
                         ]
