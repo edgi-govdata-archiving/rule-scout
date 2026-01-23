@@ -23,7 +23,15 @@ jobs:
       - name: Install the project
         run: uv sync --all-extras --dev
 
-      - name: Run update
+      - name: Update already known proposed rules
+        env:
+          REGULATIONS_GOV_API_KEY: ${{ secrets.REGULATIONS_GOV_API_KEY }}
+          NOTION_API_KEY: ${{ secrets.NOTION_API_KEY }}
+          NOTION_RULE_DATABASE: ${{ secrets.NOTION_RULE_DATABASE }}
+        run: |
+          uv run update_known_rules.py
+
+      - name: Find new proposed rules
         env:
           REGULATIONS_GOV_API_KEY: ${{ secrets.REGULATIONS_GOV_API_KEY }}
           NOTION_API_KEY: ${{ secrets.NOTION_API_KEY }}
