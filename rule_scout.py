@@ -27,10 +27,45 @@ class FrAgency:
 @dataclass
 class Docket:
     id: str
+    title: str
     url: str
     type: Literal['rulemaking', 'nonrulemaking']
     keywords: list[str] = field(default_factory=list)
     rin: str | None = None
+
+    @staticmethod
+    def from_api(data: dict) -> 'Docket':
+        """Parse a Docket object from a regulations.gov API response."""
+        docket_id = data['id']
+        rin = data['attributes']['rin']
+        if rin and rin.lower() == 'not assigned':
+            rin = None
+
+        keywords = [
+            term.strip(', ')
+            for term in data['attributes']['keywords'] or []
+        ]
+        # Handle a common case of several terms listed as a single
+        # comma-separated string instead of as multiple terms in the list.
+        #
+        # It's important to check for comma + space and not just comma. We
+        # frequently see IUPAC nomenclature for organic molecules here, which
+        # uses comma-separated numbers to describe chains of carbons, e.g.
+        # "(Z)-1-Chloro-2,3,3,3,-Tetrafluoropropene".
+        if len(keywords) == 1 and ', ' in keywords[0]:
+            keywords = re.split(r',\s+', keywords[0])
+
+        return Docket(
+            id=docket_id,
+            title=data['attributes']['title'],
+            url=f'https://www.regulations.gov/docket/{docket_id}',
+            type=data['attributes']['docketType'].lower(),
+            # TODO: the comma substitution here is because Notion can't handle
+            # commas in select box items. This should probably happen when
+            # formatting Notion input and not here.
+            keywords=[re.sub(r',', ";", term) for term in keywords],
+            rin=rin
+        )
 
 
 @dataclass
@@ -395,22 +430,9 @@ def main() -> None:
                     # that was probably automatically created.
                     docket_id = document_info['attributes']['docketId']
                     if docket_id:
-                        docket_info = regulations_gov.get_docket(docket_id)
-                        rin = docket_info['attributes']['rin']
-                        if rin and rin.lower() == 'not assigned':
-                            rin = None
-                        document.docket = Docket(
-                            id=docket_id,
-                            url=f'https://www.regulations.gov/docket/{docket_info["id"]}',
-                            type=docket_info['docketType'].lower(),
-                            keywords=[
-                                re.sub(r',', ";", term.strip(', '))
-                                for term in docket_info['attributes']['keywords'] or []
-                            ],
-                            rin=rin
-                        )
-                        if rin and rin not in data.rins:
-                            data.rins.append(rin)
+                        document.docket = Docket.from_api(regulations_gov.get_docket(docket_id))
+                        if document.docket.rin and document.docket.rin not in data.rins:
+                            data.rins.append(document.docket.rin)
 
                 print('\nRule Data:')
                 for k, v in asdict(data).items():

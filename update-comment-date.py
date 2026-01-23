@@ -1,10 +1,10 @@
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from os import getenv
-import re
 from rule_scout import (
-    NotionApi,
     NOTION_RULE_DATABASE,
+    Docket,
+    NotionApi,
     RegulationsGovApi,
     notion_rich_text,
     notion_rich_text_url_list,
@@ -135,18 +135,15 @@ with NotionApi(getenv('NOTION_API_KEY')) as notion:
                 new_keywords = set()
                 new_rins = set()
                 for docket_id in found_dockets:
-                    docket_info = regulations_gov.get_docket(docket_id)
-                    for term in docket_info['attributes']['keywords'] or []:
-                        new_keywords.add(re.sub(r',', ";", term.strip(', ')))
-
-                    rin = docket_info['attributes']['rin']
-                    if rin and rin.lower() != 'not assigned':
-                        new_rins.add(rin)
+                    docket = Docket.from_api(regulations_gov.get_docket(docket_id))
+                    new_keywords.update(docket.keywords)
+                    if docket.rin:
+                        new_rins.add(docket.rin)
 
                 old_keywords = parse_multiselect_set(page['properties']['Docket Keywords'])
                 if old_keywords != new_keywords:
-                    print(f'  KW (old): {', '.join(sorted(old_keywords))}')
-                    print(f'     (new): {', '.join(sorted(new_keywords))}')
+                    print(f'  KW (old): {sorted(old_keywords)}')
+                    print(f'     (new): {sorted(new_keywords)}')
                     updates['Docket Keywords'] = {
                         'type': 'multi_select',
                         'multi_select': [
@@ -179,8 +176,8 @@ with NotionApi(getenv('NOTION_API_KEY')) as notion:
                         for rin in old_rins
                         if rin.lower() != 'not assigned'
                     ])
-                    print(f'  RIN (old): {', '.join(sorted(old_rins))}')
-                    print(f'      (new): {', '.join(sorted(new_rins))}')
+                    print(f'  RIN (old): {sorted(old_rins)}')
+                    print(f'      (new): {sorted(new_rins)}')
                     updates['RINs'] = notion_rich_text(', '.join(sorted(new_rins)))
 
             if old_comment_deadline != latest_comment_date:
