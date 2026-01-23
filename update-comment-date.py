@@ -73,13 +73,14 @@ with NotionApi(getenv('NOTION_API_KEY')) as notion:
             updates = {}
 
             fr_number = notion.cell_as_text(page['properties']['FR Document Number'])
+            fr_date = notion.cell_as_datetime(page['properties']['FR Publication Date'])
+            print(f'{fr_number}: {fr_date}')
+
             old_comment_deadline_iso = page['properties'].get('Comment End Date')
             old_comment_deadline = notion.cell_as_datetime(old_comment_deadline_iso) if old_comment_deadline_iso else None
 
             old_docket_docs = parse_rich_text_list(page['properties']['Docket Documents'])
             old_dockets = parse_rich_text_list(page['properties']['Dockets'])
-
-            print(f'{fr_number}: {old_comment_deadline} - {old_docket_docs}')
 
             time.sleep(REGULATIONS_GOV_REQUEST_INTERVAL)
             doc_infos = regulations_gov.find_documents_by_register_id(fr_number)
@@ -101,15 +102,9 @@ with NotionApi(getenv('NOTION_API_KEY')) as notion:
                     if (not latest_comment_date) or found_comment_date > latest_comment_date:
                         latest_comment_date = found_comment_date
 
-            for missing in set(old_docket_docs).difference(found_docs):
-                print(f'  Lost doc! {missing}')
-            for missing in set(old_dockets).difference(found_dockets):
-                print(f'  Lost docket: {missing}')
-            for added in set(found_docs).difference(old_docket_docs):
-                print(f'  New doc: {added}')
-            for added in set(found_dockets).difference(old_dockets):
-                print(f'  New docket: {added}')
             if set(old_docket_docs) != set(found_docs):
+                print(f'  Docket Docs (Old): {sorted(old_docket_docs)}')
+                print(f'              (New): {sorted(found_docs)}')
                 updates['Docket Documents'] = {
                     'type': 'rich_text',
                     'rich_text': notion_rich_text_url_list(
@@ -118,6 +113,8 @@ with NotionApi(getenv('NOTION_API_KEY')) as notion:
                     )
                 }
             if set(old_dockets) != set(found_dockets):
+                print(f'  Dockets (Old): {sorted(old_dockets)}')
+                print(f'          (New): {sorted(found_dockets)}')
                 updates['Dockets'] = {
                     'type': 'rich_text',
                     'rich_text': notion_rich_text_url_list(
@@ -179,7 +176,7 @@ with NotionApi(getenv('NOTION_API_KEY')) as notion:
                     updates['RINs'] = notion_rich_text(', '.join(sorted(new_rins)))
 
             if old_comment_deadline != latest_comment_date:
-                print(f'  New comment deadline: {latest_comment_date}')
+                print(f'  New comment deadline: {latest_comment_date} (old: {old_comment_deadline})')
                 updates['Comment End Date'] = {
                     'type': 'date',
                     'date': {
