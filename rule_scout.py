@@ -372,6 +372,9 @@ def main() -> None:
         already_in_notion = set(notion.cell_as_text(row['properties']['FR Document Number'])
                                 for row in rule_rows)
 
+    # TODO: consider how to better implement this. The easy thing is to put
+    # @lru_cache on the RegulationsGovApi.get_docket method, but that could
+    # introduce problems if the way we use it changes.
     docket_cache: dict[str, Docket] = {}
     with FederalRegisterApi() as register:
         with RegulationsGovApi(getenv(key='REGULATIONS_GOV_API_KEY')) as regulations_gov:

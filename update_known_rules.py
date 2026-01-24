@@ -21,6 +21,12 @@ ALWAYS_UPDATE_DOCKET_DATA = False
 REGULATIONS_GOV_REQUEST_INTERVAL = 3.6
 
 
+# TODO: consider how to better implement this. The easy thing is to put
+# @lru_cache on the RegulationsGovApi.get_docket method, but that could
+# introduce problems if the way we use it changes.
+DOCKET_CACHE: dict[str, Docket] = {}
+
+
 def parse_rich_text_list(notion_object: dict) -> list[str]:
     text = NotionApi.cell_as_text(notion_object)
     if text:
@@ -91,13 +97,15 @@ def get_page_updates(regulations_gov: RegulationsGovApi, page: dict) -> dict[str
         }
 
     if ALWAYS_UPDATE_DOCKET_DATA or 'Dockets' in updates:
-        # TODO: Use docket.attributes.docketType
-        # This does not have a field in Notion (yet!).
         new_keywords = set()
         new_rins = set()
         for docket_id in found_dockets:
-            time.sleep(REGULATIONS_GOV_REQUEST_INTERVAL)
-            docket = Docket.from_api(regulations_gov.get_docket(docket_id))
+            docket = DOCKET_CACHE.get(docket_id)
+            if not docket:
+                time.sleep(REGULATIONS_GOV_REQUEST_INTERVAL)
+                docket = Docket.from_api(regulations_gov.get_docket(docket_id))
+                DOCKET_CACHE[docket_id] = docket
+
             new_keywords.update(docket.keywords)
             if docket.rin:
                 new_rins.add(docket.rin)
