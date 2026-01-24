@@ -406,7 +406,7 @@ def main() -> None:
                     # subscript. I don't think there's a good way to mark that
                     # up in Notion (maybe as an equation?) for now, so just rip
                     # out the markup.
-                    abstract=re.sub(r'</?\w+[^>]*>', '', rule_info['abstract']),
+                    abstract=re.sub(r'</?\w+[^>]*>', '', rule_info['abstract'] or ''),
                     action=rule_info['action'],
                     agencies=[
                         FrAgency(id=agency['id'], name=agency['name'])
@@ -507,15 +507,19 @@ def main() -> None:
                     for keyword in document.docket.keywords
                 ))
 
-                dockets = set(
-                    document.docket
-                    for document in data.docket_documents
-                    if document.docket
-                )
+                # TODO: consider making Docket objects hashable so we can just
+                # put them in a set.
+                dockets = []
+                seen_dockets = set()
+                for document in data.docket_documents:
+                    if document.docket and document.docket.id not in seen_dockets:
+                        dockets.append(document.docket)
+                        seen_dockets.add(document.docket.id)
+
                 with NotionApi(getenv('NOTION_API_KEY')) as notion:
                     notion.insert_into_db(NOTION_RULE_DATABASE, {
-                        # These are now relations and need to be formatted
-                        # differently:
+                        # Corrections are now relations and need to be
+                        # formatted differently:
                         #   {'type': 'relation', 'relation': [{'id': '<page_id>'}]}
                         # 'Corrections': notion_rich_text(', '.join(data.corrections)),
                         'FR Citation': notion_rich_text(data.fr_citation),
@@ -590,14 +594,15 @@ def main() -> None:
                             ]
                         },
                         'Action': notion_rich_text(data.action),
-                        'Correction of ID': notion_rich_text_url_list(
-                            [(
-                                data.correction_of,
-                                f'https://www.federalregister.gov/d/{data.correction_of}',
-                            )]
-                            if data.correction_of
-                            else []
-                        ),
+                        'Correction of ID': {
+                            'type': 'rich_text',
+                            'rich_text': [
+                                notion_text(
+                                    text=data.correction_of,
+                                    link=f'https://www.federalregister.gov/d/{data.correction_of}',
+                                )
+                            ] if data.correction_of else []
+                        },
                         'Docket Doc Subtypes': notion_rich_text(', '.join(
                             sorted(set(d.subtype for d in data.docket_documents if d.subtype))
                         )),
