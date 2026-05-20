@@ -20,7 +20,6 @@ ALWAYS_UPDATE_DOCKET_DATA = False
 # https://api.data.gov/docs/developer-manual/
 REGULATIONS_GOV_REQUEST_INTERVAL = 3.6
 
-
 # TODO: consider how to better implement this. The easy thing is to put
 # @lru_cache on the RegulationsGovApi.get_docket method, but that could
 # introduce problems if the way we use it changes.
@@ -103,7 +102,7 @@ def get_page_updates(regulations_gov: RegulationsGovApi, page: dict) -> dict[str
             docket = DOCKET_CACHE.get(docket_id)
             if not docket:
                 time.sleep(REGULATIONS_GOV_REQUEST_INTERVAL)
-                docket = Docket.from_api(regulations_gov.get_docket(docket_id))
+                docket = regulations_gov.get_docket_object(docket_id, if_missing='hidden')
                 DOCKET_CACHE[docket_id] = docket
 
             new_keywords.update(docket.keywords)
