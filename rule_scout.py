@@ -337,9 +337,29 @@ class RegulationsGovApi(HttpClient):
             headers={'X-Api-Key': api_key},
         )
 
-    def get_docket(self, docket_id) -> dict:
+    def get_docket(self, docket_id: str) -> dict:
         response = self.get(url=f'/dockets/{docket_id}')
         return response.raise_for_status().json()['data']
+
+    def get_docket_object(self, docket_id: str, if_missing: Literal['raise', 'hidden'] = 'raise') -> Docket:
+        """
+        Get a parsed ``Docket`` object representing the docket. If no docket
+        is found with the given ID, ``if_missing`` controls the result. If it
+        is ``'raise'`` (the default), this will raise an exception. If
+        ``'hidden'`` this will return a "hidden" Docket object with no data.
+        """
+        try:
+            return Docket.from_api(self.get_docket(docket_id))
+        except httpx.HTTPStatusError as error:
+            if if_missing == 'hidden' and error.response.status_code == 404:
+                return Docket(
+                    id=docket_id,
+                    title=docket_id,
+                    url='',
+                    type='hidden'
+                )
+            else:
+                raise
 
     def get_document(self, document_id) -> dict:
         response = self.get(url=f'/documents/{document_id}')
@@ -464,7 +484,7 @@ def main() -> None:
                     if docket_id:
                         docket = docket_cache.get(docket_id)
                         if not docket:
-                            docket = Docket.from_api(regulations_gov.get_docket(docket_id))
+                            docket = regulations_gov.get_docket_object(docket_id, if_missing='hidden')
                             docket_cache[docket_id] = docket
 
                         document.docket = docket

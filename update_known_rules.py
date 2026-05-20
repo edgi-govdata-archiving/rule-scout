@@ -1,5 +1,4 @@
 from datetime import datetime, timedelta, timezone
-from httpx import HTTPStatusError
 from os import getenv
 from rule_scout import (
     NOTION_RULE_DATABASE,
@@ -103,14 +102,7 @@ def get_page_updates(regulations_gov: RegulationsGovApi, page: dict) -> dict[str
             docket = DOCKET_CACHE.get(docket_id)
             if not docket:
                 time.sleep(REGULATIONS_GOV_REQUEST_INTERVAL)
-                try:
-                    docket = Docket.from_api(regulations_gov.get_docket(docket_id))
-                except HTTPStatusError as error:
-                    # TODO: should probably have a nicer error class for this.
-                    if error.response.status_code == 404:
-                        docket = Docket(id=docket_id, title=str(docket_id), url='', type='hidden')
-                    else:
-                        raise
+                docket = regulations_gov.get_docket_object(docket_id, if_missing='hidden')
                 DOCKET_CACHE[docket_id] = docket
 
             new_keywords.update(docket.keywords)
