@@ -31,7 +31,7 @@ class Docket:
     id: str
     title: str
     url: str
-    type: Literal['rulemaking', 'nonrulemaking']
+    type: Literal['rulemaking', 'nonrulemaking', 'hidden']
     keywords: list[str] = field(default_factory=list)
     rin: str | None = None
     # Agency-specific, but we want them for analysis and classification.
@@ -76,7 +76,7 @@ class Docket:
                 for x in [attributes['subType'], attributes['subType2']]
                 if x
             ],
-            category=attributes.get('category')
+            category=attributes.get('category'),
         )
 
 

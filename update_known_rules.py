@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+from httpx import HTTPStatusError
 from os import getenv
 from rule_scout import (
     NOTION_RULE_DATABASE,
@@ -19,7 +20,6 @@ ALWAYS_UPDATE_DOCKET_DATA = False
 # Basic rate limit is 1,000/hour, or 1 request every 3.6 seconds. Based on:
 # https://api.data.gov/docs/developer-manual/
 REGULATIONS_GOV_REQUEST_INTERVAL = 3.6
-
 
 # TODO: consider how to better implement this. The easy thing is to put
 # @lru_cache on the RegulationsGovApi.get_docket method, but that could
@@ -103,7 +103,14 @@ def get_page_updates(regulations_gov: RegulationsGovApi, page: dict) -> dict[str
             docket = DOCKET_CACHE.get(docket_id)
             if not docket:
                 time.sleep(REGULATIONS_GOV_REQUEST_INTERVAL)
-                docket = Docket.from_api(regulations_gov.get_docket(docket_id))
+                try:
+                    docket = Docket.from_api(regulations_gov.get_docket(docket_id))
+                except HTTPStatusError as error:
+                    # TODO: should probably have a nicer error class for this.
+                    if error.response.status_code == 404:
+                        docket = Docket(id=docket_id, title=str(docket_id), url='', type='hidden')
+                    else:
+                        raise
                 DOCKET_CACHE[docket_id] = docket
 
             new_keywords.update(docket.keywords)
