@@ -37,5 +37,5 @@ jobs:
           NOTION_API_KEY: ${{ secrets.NOTION_API_KEY }}
           NOTION_RULE_DATABASE: ${{ secrets.NOTION_RULE_DATABASE }}
         run: |
-          uv run rule_scout.py
+          uv run rule_scout.py --commit
 

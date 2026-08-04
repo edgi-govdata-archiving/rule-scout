@@ -92,7 +92,7 @@ class DocketDocument:
 
 
 @dataclass
-class ProposedRule:
+class FrDocument:
     title: str
     abstract: str | None
     action: str
@@ -106,6 +106,8 @@ class ProposedRule:
     fr_pdf: str
     fr_publication_date: date
     fr_topics: list[str]
+    fr_type: str
+    fr_subtype: str | None
     comment_end_date: date | None
     rins: list[str]
     docket_documents: list[DocketDocument] = field(default_factory=list)
@@ -374,9 +376,283 @@ class RegulationsGovApi(HttpClient):
         return results['data']
 
 
+def load_fr_document(
+    document_id: str,
+    register: FederalRegisterApi,
+    regulations_gov: RegulationsGovApi,
+    docket_cache: dict[str, Docket] | None = None,
+) -> FrDocument:
+    docket_cache = docket_cache or {}
+    register_info = register.get_document(document_id)
+    correction_of = None
+    # TODO: check if correction and update existing record instead
+    # of skipping. This will be a URL, so we have to parse, e.g:
+    # "https://www.federalregister.gov/api/v1/documents/2024-22385"
+    if register_info['correction_of']:
+        correction_of_raw = register_info['correction_of']
+        correction_url = urlsplit(correction_of_raw)
+        if correction_url.hostname != 'www.federalregister.gov':
+            raise ValueError(f'FR document {document_id} had invalid `correction_of` host: "{correction_of_raw}"')
+
+        path_match = re.match(r'^/api/v1/documents/(\d{4}-\d+)/?$', correction_url.path)
+        if not path_match:
+            raise ValueError(f'FR document {document_id} had invalid `correction_of` path: "{correction_of_raw}"')
+
+        correction_of = path_match.group(1)
+
+    authority = register.get_rule_authority(register_info)
+
+    data = FrDocument(
+        title=register_info['title'],
+        # Sometimes there is markup in here. Mainly I've seen <inf>
+        # (or <E T="52">, which is the same but in GPO XML) for
+        # subscript. I don't think there's a good way to mark that
+        # up in Notion (maybe as an equation?) for now, so just rip
+        # out the markup.
+        abstract=re.sub(r'</?\w+[^>]*>', '', register_info['abstract'] or ''),
+        action=register_info['action'],
+        agencies=[
+            FrAgency(id=agency['id'], name=agency['name'])
+            for agency in register_info['agencies']
+            # Some listings seem malformed! So far we've only seen:
+            #   {'raw_name': 'Office of Inspector General'}
+            # Which might be a special case?
+            if 'id' in agency
+        ],
+        authority=authority,
+        correction_of=correction_of,
+        corrections=[],
+        fr_citation=register_info['citation'],
+        fr_document_number=document_id,
+        fr_html=register_info['html_url'],
+        fr_pdf=register_info['pdf_url'],
+        fr_publication_date=date.fromisoformat(register_info['publication_date']),
+        fr_topics=sorted(set(register_info['topics'])),
+        fr_type=register_info['type'],
+        fr_subtype=register_info['subtype'],
+        rins=register_info['regulation_id_numbers'],
+        # This info is not always present and is less detailed than
+        # the equivalent from regulations.gov, so we'll also look
+        # for it there, too.
+        comment_end_date=(
+            date.fromisoformat(register_info['comments_close_on'])
+            if register_info['comments_close_on']
+            else None
+        )
+    )
+
+    for summary in regulations_gov.find_documents_by_register_id(document_id):
+        regs_gov_id = summary['id']
+        document_info = regulations_gov.get_document(regs_gov_id)
+
+        comment_start_iso = document_info['attributes']['commentStartDate']
+        comment_end_iso = document_info['attributes']['commentEndDate']
+        document = DocketDocument(
+            id=regs_gov_id,
+            url=f'https://www.regulations.gov/document/{regs_gov_id}',
+            comment_start_date=comment_start_iso and datetime.fromisoformat(comment_start_iso),
+            comment_end_date=comment_end_iso and datetime.fromisoformat(comment_end_iso),
+            subtype=document_info['attributes']['subtype']
+        )
+        data.docket_documents.append(document)
+
+        # Not all documents belong to [visible] dockets! Usually
+        # this is because an agency (e.g. FCC) does not use
+        # regulations.gov (often because they have their own
+        # public comment system). It seems the proposed rules get
+        # posted somehow to regulations.gov, but are added to a
+        # special docket that is not visible to public users, and
+        # that was probably automatically created.
+        docket_id = document_info['attributes']['docketId']
+        if docket_id:
+            docket = docket_cache.get(docket_id)
+            if not docket:
+                docket = regulations_gov.get_docket_object(docket_id, if_missing='hidden')
+                docket_cache[docket_id] = docket
+
+            document.docket = docket
+            if document.docket.rin and document.docket.rin not in data.rins:
+                data.rins.append(document.docket.rin)
+
+    return data
+
+
+def print_fr_document(document: FrDocument) -> None:
+    print('\nRule Data:')
+    for k, v in asdict(document).items():
+        if k != 'docket_documents':
+            print(f'  {k.ljust(25, '.')} {v}')
+    print('  docket_documents:')
+    for docker_document in document.docket_documents:
+        print('    -')
+        for k, v in asdict(docker_document).items():
+            print(f'    {k.ljust(23, '.')} {v}')
+
+
+def save_fr_document_in_notion(document: FrDocument, notion: NotionApi) -> None:
+    comment_end: datetime | date | None = None
+    commentable: list[DocketDocument] = sorted(
+        (d for d in document.docket_documents if d.comment_end_date),
+        key=lambda d: d.comment_end_date
+    )
+    if len(commentable):
+        comment_end = commentable[-1].comment_end_date
+    else:
+        comment_end = document.comment_end_date
+
+    # Notion can't take text segments of more than 2k characters.
+    # https://developers.notion.com/reference/request-limits#limits-for-property-values
+    # Technically we could split up authority info into more
+    # segments, but that is fairly complicated (we still have a
+    # limit on the number of segments, too) and probably not worth
+    # much. An authority block this long just doesn't make that
+    # much sense in a page property, instead of content.
+    authority_string = '; '.join(document.authority)
+    if len(authority_string) >= 2000:
+        authority_string = authority_string[:1999] + '…'
+
+    # Dedupe when multiple dockets use the same keywords.
+    keywords = sorted(set(
+        keyword
+        for docket_document in document.docket_documents
+        if docket_document.docket
+        for keyword in docket_document.docket.keywords
+    ))
+
+    # TODO: consider making Docket objects hashable so we can just
+    # put them in a set.
+    dockets = []
+    seen_dockets = set()
+    for docket_document in document.docket_documents:
+        if docket_document.docket and docket_document.docket.id not in seen_dockets:
+            dockets.append(docket_document.docket)
+            seen_dockets.add(docket_document.docket.id)
+
+    notion.insert_into_db(NOTION_RULE_DATABASE, {
+        # Corrections are now relations and need to be
+        # formatted differently:
+        #   {'type': 'relation', 'relation': [{'id': '<page_id>'}]}
+        # 'Corrections': notion_rich_text(', '.join(document.corrections)),
+        'FR Citation': notion_rich_text(document.fr_citation),
+        'FR Topics': {
+            'type': 'multi_select',
+            'multi_select': [
+                {'name': re.sub(r', ', ' and ', topic)}
+                for topic in document.fr_topics
+            ]
+        },
+        'FR Document Number': notion_rich_text(document.fr_document_number),
+        'FR PDF': {
+            'url': document.fr_pdf
+        },
+        'Docket Documents': {
+            'type': 'rich_text',
+            'rich_text': notion_rich_text_url_list(
+                (d.id, d.url)
+                for d in document.docket_documents
+            )
+        },
+        'Docket Keywords': {
+            'type': 'multi_select',
+            'multi_select': [
+                {'name': keyword}
+                for keyword in keywords
+            ]
+        },
+        'FR Publication Date': {
+            'type': 'date',
+            'date': {
+                'start': document.fr_publication_date.isoformat()
+            } if document.fr_publication_date else None
+        },
+        'Dockets': {
+            'type': 'rich_text',
+            'rich_text': notion_rich_text_url_list(
+                (d.id, d.url)
+                for d in sorted(dockets, key=lambda d: d.id)
+            )
+        },
+        'RINs': notion_rich_text(', '.join(document.rins)),
+        'Abstract': notion_rich_text(document.abstract),
+        'Rule Name': notion_rich_text(document.title),
+        'Title': {
+            'type': 'title',
+            'title': [notion_text(document.title)]
+        },
+        'Authority': notion_rich_text(authority_string),
+        'Agencies': {
+            'type': 'multi_select',
+            'multi_select': [
+                {'name': re.sub(r'\s*,\s*', ' - ', agency.name)}
+                for agency in document.agencies
+            ]
+        },
+        'Comment End Date': {
+            'type': 'date',
+            'date': {
+                'start': comment_end.isoformat()
+            } if comment_end else None
+        },
+        'FR Link': {
+            'url': document.fr_html
+        },
+        # Combined list of FR topics and Docket keywords.
+        'Tags': {
+            'type': 'multi_select',
+            'multi_select': [
+                {'name': re.sub(r', ', ' and ', topic)}
+                for topic in (*document.fr_topics, *keywords,)
+            ]
+        },
+        'Action': notion_rich_text(document.action),
+        'Correction of ID': {
+            'type': 'rich_text',
+            'rich_text': [
+                notion_text(
+                    text=document.correction_of,
+                    link=f'https://www.federalregister.gov/d/{document.correction_of}',
+                )
+            ] if document.correction_of else []
+        },
+        'Docket Doc Subtypes': notion_rich_text(', '.join(
+            sorted(set(d.subtype for d in document.docket_documents if d.subtype))
+        )),
+        'Docket Subtypes': notion_rich_text(', '.join(
+            sorted(set(itertools.chain(
+                *(d.subtypes for d in dockets)
+            )))
+        )),
+        'Docket Categories': notion_rich_text(', '.join(
+            sorted(d.category for d in dockets if d.category)
+        )),
+        'FR Type': {
+            'type': 'select',
+            'select': {'name': document.fr_type},
+        },
+        'FR Subtype': {
+            'type': 'select',
+            'select': {'name': document.fr_subtype} if document.fr_subtype else None,
+        },
+        'Type': {
+            'type': 'select',
+            'select': {'name': 'Notice'} if document.fr_type == 'Notice' else None,
+        },
+    })
+
+
 def main() -> None:
-    timeframe = timedelta(days=2)
+    from argparse import ArgumentParser
+    parser = ArgumentParser()
+    parser.add_argument('--commit', action='store_true', help='Actually create new entries in Notion.')
+    # TODO: consider cli_date from web-monitoring or edgi-scripts.
+    parser.add_argument('--since', type=int, default=2, help='Find proposed rules up to this many days old.')
+    args = parser.parse_args()
+
+    timeframe = timedelta(days=args.since)
     from_date = date.today() - timeframe
+
+    if not args.commit:
+        print('This is a dry run; results will not be saved to Notion. Use the `--commit` option to save.')
 
     with NotionApi(getenv('NOTION_API_KEY')) as notion:
         rule_rows = notion.query_db(
@@ -403,241 +679,12 @@ def main() -> None:
                 if register_id in already_in_notion:
                     continue
 
-                rule_info = register.get_document(register_id)
-                correction_of = None
-                # TODO: check if correction and update existing record instead
-                # of skipping. This will be a URL, so we have to parse, e.g:
-                # "https://www.federalregister.gov/api/v1/documents/2024-22385"
-                if rule_info['correction_of']:
-                    correction_of_raw = rule_info['correction_of']
-                    correction_url = urlsplit(correction_of_raw)
-                    if correction_url.hostname != 'www.federalregister.gov':
-                        raise ValueError(f'FR document {register_id} had invalid `correction_of` host: "{correction_of_raw}"')
+                data = load_fr_document(register_id, register, regulations_gov, docket_cache)
+                print_fr_document(data)
 
-                    path_match = re.match(r'^/api/v1/documents/(\d{4}-\d+)/?$', correction_url.path)
-                    if not path_match:
-                        raise ValueError(f'FR document {register_id} had invalid `correction_of` path: "{correction_of_raw}"')
-
-                    correction_of = path_match.group(1)
-
-                authority = register.get_rule_authority(rule_info)
-
-                data = ProposedRule(
-                    title=rule_info['title'],
-                    # Sometimes there is markup in here. Mainly I've seen <inf>
-                    # (or <E T="52">, which is the same but in GPO XML) for
-                    # subscript. I don't think there's a good way to mark that
-                    # up in Notion (maybe as an equation?) for now, so just rip
-                    # out the markup.
-                    abstract=re.sub(r'</?\w+[^>]*>', '', rule_info['abstract'] or ''),
-                    action=rule_info['action'],
-                    agencies=[
-                        FrAgency(id=agency['id'], name=agency['name'])
-                        for agency in rule_info['agencies']
-                        # Some listings seem malformed! So far we've only seen:
-                        #   {'raw_name': 'Office of Inspector General'}
-                        # Which might be a special case?
-                        if 'id' in agency
-                    ],
-                    authority=authority,
-                    correction_of=correction_of,
-                    corrections=[],
-                    fr_citation=rule_info['citation'],
-                    fr_document_number=register_id,
-                    fr_html=rule_info['html_url'],
-                    fr_pdf=rule_info['pdf_url'],
-                    fr_publication_date=date.fromisoformat(rule_info['publication_date']),
-                    fr_topics=sorted(set(rule_info['topics'])),
-                    rins=rule_info['regulation_id_numbers'],
-                    # This info is not always present and is less detailed than
-                    # the equivalent from regulations.gov, so we'll also look
-                    # for it there, too.
-                    comment_end_date=(
-                        date.fromisoformat(rule_info['comments_close_on'])
-                        if rule_info['comments_close_on']
-                        else None
-                    )
-                )
-
-                for summary in regulations_gov.find_documents_by_register_id(register_id):
-                    regs_gov_id = summary['id']
-                    document_info = regulations_gov.get_document(regs_gov_id)
-
-                    comment_start_iso = document_info['attributes']['commentStartDate']
-                    comment_end_iso = document_info['attributes']['commentEndDate']
-                    document = DocketDocument(
-                        id=regs_gov_id,
-                        url=f'https://www.regulations.gov/document/{regs_gov_id}',
-                        comment_start_date=comment_start_iso and datetime.fromisoformat(comment_start_iso),
-                        comment_end_date=comment_end_iso and datetime.fromisoformat(comment_end_iso),
-                    )
-                    data.docket_documents.append(document)
-
-                    # Not all documents belong to [visible] dockets! Usually
-                    # this is because an agency (e.g. FCC) does not use
-                    # regulations.gov (often because they have their own
-                    # public comment system). It seems the proposed rules get
-                    # posted somehow to regulations.gov, but are added to a
-                    # special docket that is not visible to public users, and
-                    # that was probably automatically created.
-                    docket_id = document_info['attributes']['docketId']
-                    if docket_id:
-                        docket = docket_cache.get(docket_id)
-                        if not docket:
-                            docket = regulations_gov.get_docket_object(docket_id, if_missing='hidden')
-                            docket_cache[docket_id] = docket
-
-                        document.docket = docket
-                        if document.docket.rin and document.docket.rin not in data.rins:
-                            data.rins.append(document.docket.rin)
-
-                print('\nRule Data:')
-                for k, v in asdict(data).items():
-                    if k != 'docket_documents':
-                        print(f'  {k.ljust(25, '.')} {v}')
-                print('  docket_documents:')
-                for document in data.docket_documents:
-                    print('    -')
-                    for k, v in asdict(document).items():
-                        print(f'    {k.ljust(23, '.')} {v}')
-
-                comment_end: datetime | date | None = None
-                commentable: list[DocketDocument] = sorted(
-                    (d for d in data.docket_documents if d.comment_end_date),
-                    key=lambda d: d.comment_end_date
-                )
-                if len(commentable):
-                    comment_end = commentable[-1].comment_end_date
-                else:
-                    comment_end = data.comment_end_date
-
-                # Notion can't take text segments of more than 2k characters.
-                # https://developers.notion.com/reference/request-limits#limits-for-property-values
-                # Technically we could split up authority info into more
-                # segments, but that is fairly complicated (we still have a
-                # limit on the number of segments, too) and probably not worth
-                # much. An authority block this long just doesn't make that
-                # much sense in a page property, instead of content.
-                authority_string = '; '.join(data.authority)
-                if len(authority_string) >= 2000:
-                    authority_string = authority_string[:1999] + '…'
-
-                # Dedupe when multiple dockets use the same keywords.
-                keywords = sorted(set(
-                    keyword
-                    for document in data.docket_documents
-                    if document.docket
-                    for keyword in document.docket.keywords
-                ))
-
-                # TODO: consider making Docket objects hashable so we can just
-                # put them in a set.
-                dockets = []
-                seen_dockets = set()
-                for document in data.docket_documents:
-                    if document.docket and document.docket.id not in seen_dockets:
-                        dockets.append(document.docket)
-                        seen_dockets.add(document.docket.id)
-
-                with NotionApi(getenv('NOTION_API_KEY')) as notion:
-                    notion.insert_into_db(NOTION_RULE_DATABASE, {
-                        # Corrections are now relations and need to be
-                        # formatted differently:
-                        #   {'type': 'relation', 'relation': [{'id': '<page_id>'}]}
-                        # 'Corrections': notion_rich_text(', '.join(data.corrections)),
-                        'FR Citation': notion_rich_text(data.fr_citation),
-                        'FR Topics': {
-                            'type': 'multi_select',
-                            'multi_select': [
-                                {'name': re.sub(r', ', ' and ', topic)}
-                                for topic in data.fr_topics
-                            ]
-                        },
-                        'FR Document Number': notion_rich_text(data.fr_document_number),
-                        'FR PDF': {
-                            'url': data.fr_pdf
-                        },
-                        'Docket Documents': {
-                            'type': 'rich_text',
-                            'rich_text': notion_rich_text_url_list(
-                                (d.id, d.url)
-                                for d in data.docket_documents
-                            )
-                        },
-                        'Docket Keywords': {
-                            'type': 'multi_select',
-                            'multi_select': [
-                                {'name': keyword}
-                                for keyword in keywords
-                            ]
-                        },
-                        'FR Publication Date': {
-                            'type': 'date',
-                            'date': {
-                                'start': data.fr_publication_date.isoformat()
-                            } if data.fr_publication_date else None
-                        },
-                        'Dockets': {
-                            'type': 'rich_text',
-                            'rich_text': notion_rich_text_url_list(
-                                (d.id, d.url)
-                                for d in sorted(dockets, key=lambda d: d.id)
-                            )
-                        },
-                        'RINs': notion_rich_text(', '.join(data.rins)),
-                        'Abstract': notion_rich_text(data.abstract),
-                        'Rule Name': notion_rich_text(data.title),
-                        'Title': {
-                            'type': 'title',
-                            'title': [notion_text(data.title)]
-                        },
-                        'Authority': notion_rich_text(authority_string),
-                        'Agencies': {
-                            'type': 'multi_select',
-                            'multi_select': [
-                                {'name': re.sub(r'\s*,\s*', ' - ', agency.name)}
-                                for agency in data.agencies
-                            ]
-                        },
-                        'Comment End Date': {
-                            'type': 'date',
-                            'date': {
-                                'start': comment_end.isoformat()
-                            } if comment_end else None
-                        },
-                        'FR Link': {
-                            'url': data.fr_html
-                        },
-                        # Combined list of FR topics and Docket keywords.
-                        'Tags': {
-                            'type': 'multi_select',
-                            'multi_select': [
-                                {'name': re.sub(r', ', ' and ', topic)}
-                                for topic in (*data.fr_topics, *keywords,)
-                            ]
-                        },
-                        'Action': notion_rich_text(data.action),
-                        'Correction of ID': {
-                            'type': 'rich_text',
-                            'rich_text': [
-                                notion_text(
-                                    text=data.correction_of,
-                                    link=f'https://www.federalregister.gov/d/{data.correction_of}',
-                                )
-                            ] if data.correction_of else []
-                        },
-                        'Docket Doc Subtypes': notion_rich_text(', '.join(
-                            sorted(set(d.subtype for d in data.docket_documents if d.subtype))
-                        )),
-                        'Docket Subtypes': notion_rich_text(', '.join(
-                            sorted(set(itertools.chain(
-                                *(d.subtypes for d in dockets)
-                            )))
-                        )),
-                        'Docket Categories': notion_rich_text(', '.join(
-                            sorted(d.category for d in dockets if d.category)
-                        )),
-                    })
+                if args.commit:
+                    with NotionApi(getenv('NOTION_API_KEY')) as notion:
+                        save_fr_document_in_notion(data, notion)
 
     print('Done!')
 
