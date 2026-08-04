@@ -92,7 +92,7 @@ class DocketDocument:
 
 
 @dataclass
-class ProposedRule:
+class FrDocument:
     title: str
     abstract: str | None
     action: str
@@ -106,6 +106,8 @@ class ProposedRule:
     fr_pdf: str
     fr_publication_date: date
     fr_topics: list[str]
+    fr_type: str
+    fr_subtype: str | None
     comment_end_date: date | None
     rins: list[str]
     docket_documents: list[DocketDocument] = field(default_factory=list)
@@ -422,7 +424,7 @@ def main() -> None:
 
                 authority = register.get_rule_authority(rule_info)
 
-                data = ProposedRule(
+                data = FrDocument(
                     title=rule_info['title'],
                     # Sometimes there is markup in here. Mainly I've seen <inf>
                     # (or <E T="52">, which is the same but in GPO XML) for
@@ -448,6 +450,8 @@ def main() -> None:
                     fr_pdf=rule_info['pdf_url'],
                     fr_publication_date=date.fromisoformat(rule_info['publication_date']),
                     fr_topics=sorted(set(rule_info['topics'])),
+                    fr_type=rule_info['type'],
+                    fr_subtype=rule_info['subtype'],
                     rins=rule_info['regulation_id_numbers'],
                     # This info is not always present and is less detailed than
                     # the equivalent from regulations.gov, so we'll also look
@@ -637,6 +641,14 @@ def main() -> None:
                         'Docket Categories': notion_rich_text(', '.join(
                             sorted(d.category for d in dockets if d.category)
                         )),
+                        'FR Type': {
+                            'type': 'select',
+                            'select': {'name': data.fr_type},
+                        },
+                        'FR Subtype': {
+                            'type': 'select',
+                            'select': {'name': data.fr_subtype} if data.fr_subtype else None,
+                        },
                     })
 
     print('Done!')
