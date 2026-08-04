@@ -377,8 +377,18 @@ class RegulationsGovApi(HttpClient):
 
 
 def main() -> None:
-    timeframe = timedelta(days=2)
+    from argparse import ArgumentParser
+    parser = ArgumentParser()
+    parser.add_argument('--commit', action='store_true', help='Actually create new entries in Notion.')
+    # TODO: consider cli_date from web-monitoring or edgi-scripts.
+    parser.add_argument('--since', type=int, default=2, help='Find proposed rules up to this many days old.')
+    args = parser.parse_args()
+
+    timeframe = timedelta(days=args.since)
     from_date = date.today() - timeframe
+
+    if not args.commit:
+        print('This is a dry run; results will not be saved to Notion. Use the `--commit` option to save.')
 
     with NotionApi(getenv('NOTION_API_KEY')) as notion:
         rule_rows = notion.query_db(
@@ -543,6 +553,9 @@ def main() -> None:
                     if document.docket and document.docket.id not in seen_dockets:
                         dockets.append(document.docket)
                         seen_dockets.add(document.docket.id)
+
+                if not args.commit:
+                    continue
 
                 with NotionApi(getenv('NOTION_API_KEY')) as notion:
                     notion.insert_into_db(NOTION_RULE_DATABASE, {
