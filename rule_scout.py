@@ -474,6 +474,7 @@ def main() -> None:
                         url=f'https://www.regulations.gov/document/{regs_gov_id}',
                         comment_start_date=comment_start_iso and datetime.fromisoformat(comment_start_iso),
                         comment_end_date=comment_end_iso and datetime.fromisoformat(comment_end_iso),
+                        subtype=document_info['attributes']['subtype']
                     )
                     data.docket_documents.append(document)
 
